@@ -3,14 +3,15 @@
 
 
 struct nullopt_t {};
-nullopt_t nullopt;
+static constexpr nullopt_t nullopt;
 
 struct in_place_t {};
-in_place_t in_place;
+static constexpr in_place_t in_place;
 
 template<typename T, bool is_trivial>
 struct optional_destructor_base {
-  constexpr optional_destructor_base() noexcept : has_value(false) {}
+  constexpr optional_destructor_base() noexcept :
+    has_value(false), dummy(0) {}
 
   constexpr optional_destructor_base(T value_) :
     has_value(true), value(std::move(value_)) {}
@@ -26,16 +27,24 @@ struct optional_destructor_base {
     }
   }
 
+  void reset() {
+    if (this->has_value) {
+      this->value.~T();
+      this->has_value = false;
+    }
+  }
+
   bool has_value;
   union {
     T value;
-    char dummy = 0;
+    char dummy;
   };
 };
 
 template<typename T>
 struct optional_destructor_base<T, true> {
-  constexpr optional_destructor_base() noexcept : has_value(false) {}
+  constexpr optional_destructor_base() noexcept :
+    has_value(false), dummy(0) {}
 
   constexpr optional_destructor_base(T value) :
     has_value(true), value(std::move(value)) {}
@@ -46,20 +55,22 @@ struct optional_destructor_base<T, true> {
 
   ~optional_destructor_base() = default;
 
+  void reset() {
+    this->has_value = false;
+  }
+
   bool has_value;
   union {
     T value;
-    char dummy = 0;
+    char dummy;
   };
 };
-
 
 template <typename T, bool is_trivial>
 struct optional_constructor_base : optional_destructor_base<T, std::is_trivially_destructible_v<T>> {
   using base = optional_destructor_base<T, std::is_trivially_destructible_v<T>>;
   using base::base;
-
-  constexpr optional_constructor_base() noexcept = default;
+  using base::reset;
 
   constexpr optional_constructor_base(optional_constructor_base const &other) {
     if ((this->has_value = other.has_value)) {
@@ -67,37 +78,50 @@ struct optional_constructor_base : optional_destructor_base<T, std::is_trivially
     }
   }
 
-  constexpr optional_constructor_base(optional_constructor_base &&other) {
+  constexpr optional_constructor_base(optional_constructor_base &&other)
+    noexcept(std::is_nothrow_move_constructible_v<T>) {
     if ((this->has_value = other.has_value)) {
       new(&this->value) T(std::move(other.value));
     }
   }
 
   optional_constructor_base &operator=(optional_constructor_base const &other) {
-    this->reset();
+    if (this == &other) {
+      return *this;
+    }
+
     if (other.has_value) {
-      this->value = other.value;
-      this->has_value = true;
+      if (this->has_value) {
+        this->value = other.value;
+      } else {
+        new(&this->value) T(other.value);
+        this->has_value = true;
+      }
+    } else {
+      reset();
     }
 
     return *this;
   }
 
-  optional_constructor_base& operator=(optional_constructor_base &&other) {
-    this->reset();
+  optional_constructor_base& operator=(optional_constructor_base &&other)
+    noexcept(std::is_nothrow_move_assignable_v<T> && std::is_nothrow_move_constructible_v<T>) {
+    if (this == &other) {
+      return *this;
+    }
+
     if (other.has_value) {
-      this->value =  std::move(other.value);
-      this->has_value = true;
+      if (this->has_value) {
+        this->value = std::move(other.value);
+      } else {
+        new(&this->value) T(std::move(other.value));
+        this->has_value = true;
+      }
+    } else {
+      reset();
     }
 
     return *this;
-  }
-
-  void reset() {
-    if (this->has_value) {
-      this->value.~T();
-      this->has_value = false;
-    }
   }
 };
 
@@ -105,24 +129,17 @@ template <typename T>
 struct optional_constructor_base<T, true> : optional_destructor_base<T, std::is_trivially_destructible_v<T>> {
   using base = optional_destructor_base<T, std::is_trivially_destructible_v<T>>;
   using base::base;
+  using base::reset;
 
-  constexpr optional_constructor_base() noexcept = default;
   constexpr optional_constructor_base(optional_constructor_base const &other) = default;
-  constexpr optional_constructor_base(optional_constructor_base &&other) = default;
+  constexpr optional_constructor_base(optional_constructor_base &&other) noexcept = default;
 
   optional_constructor_base &operator=(optional_constructor_base const &other) = default;
-  optional_constructor_base& operator=(optional_constructor_base &&other) = default;
-
-  void reset() {
-    if (this->has_value) {
-      this->value.~T();
-      this->has_value = false;
-    }
-  }
+  optional_constructor_base& operator=(optional_constructor_base &&other) noexcept = default;
 };
 
 template<typename T>
-struct optional : optional_constructor_base<T, std::is_trivially_copyable_v<T>> {
+struct optional : private optional_constructor_base<T, std::is_trivially_copyable_v<T>> {
   using base = optional_constructor_base<T, std::is_trivially_copyable_v<T>>;
   using base::base;
   using base::reset;
@@ -130,10 +147,11 @@ struct optional : optional_constructor_base<T, std::is_trivially_copyable_v<T>> 
   constexpr optional(nullopt_t) noexcept : optional() {}
 
   constexpr optional(optional const &) = default;
-  constexpr optional(optional &&) = default;
+  constexpr optional(optional &&) noexcept(std::is_nothrow_move_constructible_v<T>) = default;
 
   optional &operator=(optional const &other) = default;
-  optional &operator=(optional &&other) = default;
+  optional &operator=(optional &&other) noexcept(std::is_nothrow_move_assignable_v<T> &&
+      std::is_nothrow_move_constructible_v<T>) = default;
 
   optional &operator=(nullopt_t) noexcept {
     reset();
@@ -165,50 +183,52 @@ struct optional : optional_constructor_base<T, std::is_trivially_copyable_v<T>> 
     new (&this->value) T(std::forward<Args>(args)...);
     this->has_value = true;
   }
+
+  constexpr bool operator==(optional const &b) {
+    if (this->has_value != b.has_value) {
+      return false;
+    }
+
+    if (!this->has_value) {
+      return true;
+    } else {
+      return this->value == b.value;
+    }
+  }
+
+  constexpr bool operator!=(optional const &b) {
+    return !(*this == b);
+  }
+
+  constexpr bool operator<(optional const &b) {
+    if (!b.has_value) {
+      return false;
+    }
+
+    if (!this->has_value) {
+      return true;
+    } else {
+      return this->value < b.value;
+    }
+  }
+
+  constexpr bool operator>(optional const &b) {
+    if (!this->has_value) {
+      return false;
+    }
+
+    if (!b.has_value) {
+      return true;
+    } else {
+      return this->value > b.value;
+    }
+  }
+
+  constexpr bool operator<=(optional const &b) {
+    return !(*this > b);
+  }
+
+  constexpr bool operator>=( optional<T> const &b) {
+    return !(*this < b);
+  }
 };
-
-template<typename T>
-constexpr bool operator==(optional<T> const &a, optional<T> const &b) {
-  if (a.has_value != b.has_value) {
-    return false;
-  }
-
-  if (a.has_value == false) {
-    return true;
-  } else {
-    return a.value == b.value;
-  }
-}
-
-template<typename T>
-constexpr bool operator!=(optional<T> const &a, optional<T> const &b) {
-  return !(a == b);
-}
-
-template<typename T>
-constexpr bool operator<(optional<T> const &a, optional<T> const &b) {
-  if (!b.has_value) {
-    return false;
-  }
-
-  if (!a.has_value) {
-    return true;
-  } else {
-    return a.value < b.value;
-  }
-}
-
-template<typename T>
-constexpr bool operator<=(optional<T> const &a, optional<T> const &b) {
-  return (a < b) || (a == b);
-}
-
-template<typename T>
-constexpr bool operator>(optional<T> const &a, optional<T> const &b) {
-  return !(a <= b);
-}
-
-template<typename T>
-constexpr bool operator>=(optional<T> const &a, optional<T> const &b) {
-  return !(a < b) || (a == b);
-}
