@@ -3,10 +3,10 @@
 
 
 struct nullopt_t {};
-static constexpr nullopt_t nullopt;
+inline constexpr nullopt_t nullopt;
 
 struct in_place_t {};
-static constexpr in_place_t in_place;
+inline constexpr in_place_t in_place;
 
 template<typename T, bool is_trivial>
 struct optional_destructor_base {
@@ -22,9 +22,7 @@ struct optional_destructor_base {
 
 
   ~optional_destructor_base() {
-    if (has_value) {
-      value.~T();
-    }
+    reset();
   }
 
   void reset() {
