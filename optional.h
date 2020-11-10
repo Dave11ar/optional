@@ -76,7 +76,7 @@ struct optional_constructor_base : optional_destructor_base<T, std::is_trivially
   optional_constructor_base &operator=(optional_constructor_base const &other) {
     this->reset();
     if (other.has_value) {
-      new(&this->value) T(other.value);
+      this->value = other.value;
       this->has_value = true;
     }
 
@@ -86,7 +86,7 @@ struct optional_constructor_base : optional_destructor_base<T, std::is_trivially
   optional_constructor_base& operator=(optional_constructor_base &&other) {
     this->reset();
     if (other.has_value) {
-      new(&this->value) T(std::move(other.value));
+      this->value =  std::move(other.value);
       this->has_value = true;
     }
 
